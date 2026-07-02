@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Thu thập snapshot giá thuê GPU từ Vast.ai public API.
+"""Thu thập snapshot giá thuê GPU từ các nguồn public API.
 
-Chạy định kỳ bằng cron (mỗi giờ). Mỗi lần chạy:
-- Ghi 1 dòng thống kê giá cho mỗi GPU vào data/prices.csv (dữ liệu chính để vẽ chart)
-- Lưu toàn bộ offer thô vào data/raw/<timestamp>.json.gz (để phân tích sâu sau này)
+Nguồn hiện tại:
+- vast: Vast.ai marketplace (nhiều offer/GPU -> có phân phối giá min/p10/median)
+- runpod-secure / runpod-community: RunPod (giá niêm yết cố định/GPU -> offers=1)
+
+Chạy định kỳ bằng cron/GitHub Actions (mỗi giờ). Mỗi lần chạy:
+- Ghi 1 dòng thống kê cho mỗi (source, GPU) vào data/prices.csv
+- Lưu response thô vào data/raw/<timestamp>.json.gz
 
 Không cần API key. Chỉ dùng stdlib.
 """
@@ -19,7 +23,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Các GPU đáng theo dõi cho bài phân tích. Tên phải khớp gpu_name của Vast.ai.
+# Các GPU đáng theo dõi. Tên phải khớp gpu_name của Vast.ai.
 GPUS = [
     "H100 SXM",
     "H100 NVL",
@@ -30,11 +34,25 @@ GPUS = [
     "RTX 5090",
 ]
 
-API_URL = "https://console.vast.ai/api/v0/bundles/"
+# displayName của RunPod -> tên chuẩn trong GPUS
+RUNPOD_GPU_MAP = {
+    "H100 SXM": "H100 SXM",
+    "H100 NVL": "H100 NVL",
+    "H200 SXM": "H200",
+    "B200": "B200",
+    "A100 SXM": "A100 SXM4",
+    "RTX 4090": "RTX 4090",
+    "RTX 5090": "RTX 5090",
+}
+
+VAST_URL = "https://console.vast.ai/api/v0/bundles/"
+RUNPOD_URL = "https://api.runpod.io/graphql"
+USER_AGENT = "gpu-price-research/0.1"
 DATA_DIR = Path(__file__).parent / "data"
 CSV_PATH = DATA_DIR / "prices.csv"
 CSV_FIELDS = [
     "timestamp_utc",
+    "source",
     "gpu",
     "offers",
     "min_usd_hr",
@@ -45,7 +63,15 @@ CSV_FIELDS = [
 ]
 
 
-def fetch_offers(gpu_name):
+def http_json(url, data=None, headers=None):
+    req = urllib.request.Request(
+        url, data=data, headers={"User-Agent": USER_AGENT, **(headers or {})}
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.load(resp)
+
+
+def fetch_vast_offers(gpu_name):
     query = {
         "gpu_name": {"eq": gpu_name},
         "rentable": {"eq": True},
@@ -54,13 +80,11 @@ def fetch_offers(gpu_name):
         "limit": 1000,
         "order": [["dph_total", "asc"]],
     }
-    url = API_URL + "?q=" + urllib.parse.quote(json.dumps(query))
-    req = urllib.request.Request(url, headers={"User-Agent": "gpu-price-research/0.1"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)["offers"]
+    url = VAST_URL + "?q=" + urllib.parse.quote(json.dumps(query))
+    return http_json(url)["offers"]
 
 
-def snapshot_row(timestamp, gpu_name, offers):
+def vast_row(timestamp, gpu_name, offers):
     # dph_total là giá cả máy; chia num_gpus để ra giá mỗi GPU/giờ
     prices = sorted(
         o["dph_total"] / o["num_gpus"]
@@ -76,6 +100,7 @@ def snapshot_row(timestamp, gpu_name, offers):
         return None
     return {
         "timestamp_utc": timestamp,
+        "source": "vast",
         "gpu": gpu_name,
         "offers": len(prices),
         "min_usd_hr": round(prices[0], 4),
@@ -86,25 +111,70 @@ def snapshot_row(timestamp, gpu_name, offers):
     }
 
 
+def fetch_runpod_gpu_types():
+    body = json.dumps(
+        {"query": "query { gpuTypes { id displayName securePrice communityPrice } }"}
+    ).encode()
+    data = http_json(RUNPOD_URL, data=body, headers={"Content-Type": "application/json"})
+    return data["data"]["gpuTypes"]
+
+
+def runpod_rows(timestamp, gpu_types):
+    # Giá RunPod là niêm yết cố định theo GPU type; giá 0 nghĩa là không có hàng
+    rows = []
+    for t in gpu_types:
+        gpu = RUNPOD_GPU_MAP.get(t["displayName"])
+        if not gpu:
+            continue
+        for market, price in [
+            ("runpod-secure", t.get("securePrice")),
+            ("runpod-community", t.get("communityPrice")),
+        ]:
+            if not price:
+                continue
+            rows.append({
+                "timestamp_utc": timestamp,
+                "source": market,
+                "gpu": gpu,
+                "offers": 1,
+                "min_usd_hr": price,
+                "p10_usd_hr": price,
+                "median_usd_hr": price,
+                "verified_offers": "",
+                "verified_median_usd_hr": "",
+            })
+    return rows
+
+
 def main():
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     DATA_DIR.joinpath("raw").mkdir(parents=True, exist_ok=True)
 
     rows, raw = [], {}
+
+    vast_raw = {}
     for gpu in GPUS:
         try:
-            offers = fetch_offers(gpu)
+            offers = fetch_vast_offers(gpu)
         except Exception as e:
-            print(f"[WARN] {gpu}: {e}", file=sys.stderr)
+            print(f"[WARN] vast/{gpu}: {e}", file=sys.stderr)
             continue
-        raw[gpu] = offers
-        row = snapshot_row(timestamp, gpu, offers)
+        vast_raw[gpu] = offers
+        row = vast_row(timestamp, gpu, offers)
         if row:
             rows.append(row)
         time.sleep(1)  # lịch sự với API công khai
+    raw["vast"] = vast_raw
+
+    try:
+        gpu_types = fetch_runpod_gpu_types()
+        raw["runpod"] = gpu_types
+        rows.extend(runpod_rows(timestamp, gpu_types))
+    except Exception as e:
+        print(f"[WARN] runpod: {e}", file=sys.stderr)
 
     if not rows:
-        sys.exit("Không lấy được dữ liệu GPU nào — kiểm tra mạng hoặc API đổi format.")
+        sys.exit("Không lấy được dữ liệu từ nguồn nào — kiểm tra mạng hoặc API đổi format.")
 
     write_header = not CSV_PATH.exists()
     with open(CSV_PATH, "a", newline="") as f:
@@ -115,13 +185,12 @@ def main():
 
     raw_path = DATA_DIR / "raw" / f"{timestamp.replace(':', '')}.json.gz"
     with gzip.open(raw_path, "wt") as f:
-        json.dump({"timestamp_utc": timestamp, "offers_by_gpu": raw}, f)
+        json.dump({"timestamp_utc": timestamp, "sources": raw}, f)
 
     for row in rows:
         print(
-            f"{row['gpu']:>10}: {row['offers']:>4} offers | "
-            f"min ${row['min_usd_hr']}/h | median ${row['median_usd_hr']}/h | "
-            f"verified median ${row['verified_median_usd_hr'] or 'n/a'}/h"
+            f"{row['source']:>17} | {row['gpu']:>10}: {row['offers']:>4} offers | "
+            f"min ${row['min_usd_hr']}/h | median ${row['median_usd_hr']}/h"
         )
 
 

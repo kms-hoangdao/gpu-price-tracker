@@ -1,7 +1,11 @@
 # GPU Price Tracker — bước validate
 
-Script thu thập giá thuê GPU từ Vast.ai public API (không cần key), phục vụ bài phân tích
+Script thu thập giá thuê GPU từ các public API (không cần key), phục vụ bài phân tích
 "30 ngày giá GPU spot" để đo nhu cầu trước khi build sản phẩm thật.
+
+Nguồn hiện tại (cột `source` trong CSV):
+- `vast` — Vast.ai marketplace: nhiều offer/GPU nên có phân phối giá (min/p10/median)
+- `runpod-secure`, `runpod-community` — RunPod: giá niêm yết cố định (offers=1, min=median)
 
 ## Chạy tay
 
@@ -22,8 +26,8 @@ Lưu ý macOS: máy ngủ thì cron không chạy. Nếu muốn chắc chắn 24
 
 ## Dữ liệu
 
-- `data/prices.csv` — mỗi giờ 1 dòng/GPU: min, p10, median, verified median ($/GPU/giờ).
-  Đây là dữ liệu chính để vẽ chart cho bài viết.
+- `data/prices.csv` — mỗi giờ 1 dòng/(source, GPU): min, p10, median, verified median
+  ($/GPU/giờ). Đây là dữ liệu chính để vẽ chart cho bài viết.
 - `data/raw/<timestamp>.json.gz` — toàn bộ offer thô (region, verified, specs) để sau này
   phân tích sâu hơn (giá theo region, giờ nào trong ngày rẻ nhất...). ~90KB/lần chạy,
   ~65MB/tháng.
