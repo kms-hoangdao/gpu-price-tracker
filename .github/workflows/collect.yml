@@ -1,4 +1,4 @@
-name: Collect GPU prices
+name: collect-gpu-prices
 
 on:
   schedule:
