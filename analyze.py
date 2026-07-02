@@ -25,7 +25,11 @@ COLORS = {  # palette đã validate (dataviz skill), light/dark cùng hue khác 
     "datacrunch-spot": ("#4a3aa7", "#9085e9"),
     "cudo": ("#e34948", "#e66767"),
 }
-GPU_ORDER = ["H100 SXM", "H100 NVL", "H200", "B200", "A100 SXM4", "RTX 4090", "RTX 5090"]
+GPU_ORDER = [
+    "H100 SXM", "H100 NVL", "H100 PCIE", "H200", "B200",
+    "A100 SXM4", "A100 PCIE", "L40S", "RTX PRO 6000 WS", "RTX A6000",
+    "RTX 3090", "RTX 4090", "RTX 5080", "RTX 5090",
+]
 HEADLINE_GPU = "H100 SXM"
 
 

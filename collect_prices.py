@@ -30,10 +30,17 @@ from pathlib import Path
 GPUS = [
     "H100 SXM",
     "H100 NVL",
+    "H100 PCIE",
     "H200",
     "B200",
     "A100 SXM4",
+    "A100 PCIE",
+    "L40S",
+    "RTX PRO 6000 WS",
+    "RTX A6000",
+    "RTX 3090",
     "RTX 4090",
+    "RTX 5080",
     "RTX 5090",
 ]
 
@@ -41,10 +48,16 @@ GPUS = [
 RUNPOD_GPU_MAP = {
     "H100 SXM": "H100 SXM",
     "H100 NVL": "H100 NVL",
+    "H100 PCIe": "H100 PCIE",
     "H200 SXM": "H200",
     "B200": "B200",
     "A100 SXM": "A100 SXM4",
+    "A100 PCIe": "A100 PCIE",
+    "L40S": "L40S",
+    "RTX A6000": "RTX A6000",
+    "RTX 3090": "RTX 3090",
     "RTX 4090": "RTX 4090",
+    "RTX 5080": "RTX 5080",
     "RTX 5090": "RTX 5090",
 }
 DATACRUNCH_GPU_MAP = {
@@ -52,9 +65,12 @@ DATACRUNCH_GPU_MAP = {
     "H200 SXM5 141GB": "H200",
     "B200 SXM6 180GB": "B200",
     "A100 SXM4 80GB": "A100 SXM4",
+    "L40S 48GB": "L40S",
+    "RTX A6000 48GB": "RTX A6000",
 }
 CUDO_GPU_MAP = {
     "H100 SXM": "H100 SXM",
+    "A100 80GB PCIe": "A100 PCIE",
 }
 
 VAST_URL = "https://console.vast.ai/api/v0/bundles/"
@@ -107,16 +123,30 @@ def stats_row(timestamp, source, gpu, prices, verified=None):
 # --- Vast.ai ---
 
 def fetch_vast_offers(gpu_name):
-    query = {
-        "gpu_name": {"eq": gpu_name},
-        "rentable": {"eq": True},
-        "external": {"eq": False},
-        "type": "on-demand",
-        "limit": 1000,
-        "order": [["dph_total", "asc"]],
-    }
-    url = VAST_URL + "?q=" + urllib.parse.quote(json.dumps(query))
-    return http_json(url)["offers"]
+    # API cap ~64 offers/response nên phân trang bằng cursor giá:
+    # sort dph_total tăng dần, trang sau lọc dph_total > giá cao nhất đã thấy
+    seen, cursor = {}, None
+    for _ in range(10):
+        query = {
+            "gpu_name": {"eq": gpu_name},
+            "rentable": {"eq": True},
+            "external": {"eq": False},
+            "type": "on-demand",
+            "limit": 500,
+            "order": [["dph_total", "asc"]],
+        }
+        if cursor is not None:
+            query["dph_total"] = {"gt": cursor}
+        url = VAST_URL + "?q=" + urllib.parse.quote(json.dumps(query))
+        batch = http_json(url)["offers"]
+        new = [o for o in batch if o["id"] not in seen]
+        for o in new:
+            seen[o["id"]] = o
+        if len(batch) < 60 or not new:
+            break
+        cursor = max(o["dph_total"] for o in batch)
+        time.sleep(1)  # tránh rate limit khi phân trang
+    return list(seen.values())
 
 
 def vast_rows(timestamp):
@@ -126,8 +156,16 @@ def vast_rows(timestamp):
         try:
             offers = fetch_vast_offers(gpu)
         except Exception as e:
-            print(f"[WARN] vast/{gpu}: {e}", file=sys.stderr)
-            continue
+            if "429" in str(e):  # rate limit: nghỉ rồi thử lại 1 lần
+                time.sleep(20)
+                try:
+                    offers = fetch_vast_offers(gpu)
+                except Exception as e2:
+                    print(f"[WARN] vast/{gpu}: {e2}", file=sys.stderr)
+                    continue
+            else:
+                print(f"[WARN] vast/{gpu}: {e}", file=sys.stderr)
+                continue
         raw[gpu] = offers
         # dph_total là giá cả máy; chia num_gpus để ra giá mỗi GPU/giờ
         usable = [o for o in offers if o.get("num_gpus") and o.get("dph_total")]
