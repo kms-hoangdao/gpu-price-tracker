@@ -6,6 +6,12 @@ Script thu thập giá thuê GPU từ các public API (không cần key), phục
 Nguồn hiện tại (cột `source` trong CSV):
 - `vast` — Vast.ai marketplace: nhiều offer/GPU nên có phân phối giá (min/p10/median)
 - `runpod-secure`, `runpod-community` — RunPod: giá niêm yết cố định (offers=1, min=median)
+- `datacrunch`, `datacrunch-spot` — DataCrunch: giá niêm yết on-demand và spot
+- `cudo` — Cudo Compute: giá mỗi GPU theo từng datacenter (lưu ý: chưa gồm vCPU/RAM
+  tính riêng, nên hơi thấp hơn giá thuê thực tế)
+
+Đã thăm dò nhưng bỏ qua: Lambda, Hyperstack, TensorDock (API đều cần key),
+Vultr (GPU fractional, khó map sang giá mỗi-GPU tương đương).
 
 ## Chạy tay
 
